@@ -3,7 +3,7 @@
 DDL Script: Create Silver Tables (PostgreSQL)
 ===============================================================================
 */
-
+--Silver layer 
 -- ================= CRM =================
 
 DROP TABLE IF EXISTS silver.crm_cust_info;
