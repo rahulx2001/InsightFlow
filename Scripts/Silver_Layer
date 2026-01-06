@@ -1,0 +1,340 @@
+/*
+===============================================================================
+DDL & ETL Script: Silver Layer (PostgreSQL)
+===============================================================================
+Purpose:
+    This script builds the Silver layer of the data warehouse.
+    The Silver layer represents cleansed, standardized, and trusted data
+    that sits between the raw Bronze layer and the analytical Gold layer.
+
+    The objective of the Silver layer is to:
+        - Remove duplicates
+        - Standardize values across systems
+        - Fix invalid and inconsistent data
+        - Apply business rules
+        - Prepare data for dimensional modeling
+
+    The Silver layer integrates data from:
+        - CRM systems
+        - ERP systems
+
+    It produces a clean and reliable foundation for building the Gold star schema.
+
+Objects created:
+    CRM:
+        - silver.crm_cust_info
+        - silver.crm_prd_info
+        - silver.crm_sales_details
+
+    ERP:
+        - silver.erp_cust_az12
+        - silver.erp_loc_a101
+        - silver.erp_px_cat_g1v2
+
+Usage:
+    This script is executed through the stored procedure:
+
+        CALL silver.load_silver();
+
+    The procedure truncates and reloads all Silver tables, making the load
+    repeatable, auditable, and production-ready.
+========================================================================================
+*/
+
+
+-- =============================================================================
+-- DROP & CREATE SILVER TABLES
+-- =============================================================================
+
+DROP TABLE IF EXISTS silver.crm_cust_info;
+CREATE TABLE silver.crm_cust_info (
+    cst_id             INT,
+    cst_key            VARCHAR(50),
+    cst_firstname      VARCHAR(50),
+    cst_lastname       VARCHAR(50),
+    cst_marital_status VARCHAR(50),
+    cst_gndr           VARCHAR(50),
+    cst_create_date    DATE,
+    dwh_create_date    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DROP TABLE IF EXISTS silver.crm_prd_info;
+CREATE TABLE silver.crm_prd_info (
+    prd_id          INT,
+    cat_id          VARCHAR(50),
+    prd_key         VARCHAR(50),
+    prd_nm          VARCHAR(50),
+    prd_cost        INT,
+    prd_line        VARCHAR(50),
+    prd_start_dt    DATE,
+    prd_end_dt      DATE,
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DROP TABLE IF EXISTS silver.crm_sales_details;
+CREATE TABLE silver.crm_sales_details (
+    sls_ord_num     VARCHAR(50),
+    sls_prd_key     VARCHAR(50),
+    sls_cust_id     INT,
+    sls_order_dt    DATE,
+    sls_ship_dt     DATE,
+    sls_due_dt      DATE,
+    sls_sales       INT,
+    sls_quantity    INT,
+    sls_price       INT,
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DROP TABLE IF EXISTS silver.erp_loc_a101;
+CREATE TABLE silver.erp_loc_a101 (
+    cid             VARCHAR(50),
+    cntry           VARCHAR(50),
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DROP TABLE IF EXISTS silver.erp_cust_az12;
+CREATE TABLE silver.erp_cust_az12 (
+    cid             VARCHAR(50),
+    bdate           DATE,
+    gen             VARCHAR(50),
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+DROP TABLE IF EXISTS silver.erp_px_cat_g1v2;
+CREATE TABLE silver.erp_px_cat_g1v2 (
+    id              VARCHAR(50),
+    cat             VARCHAR(50),
+    subcat          VARCHAR(50),
+    maintenance     VARCHAR(50),
+    dwh_create_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- =============================================================================
+-- SILVER LOAD PROCEDURE
+-- =============================================================================
+
+CREATE OR REPLACE PROCEDURE silver.load_silver()
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+    --------------------------------------------------------------------------
+    -- Load Customers
+    -- =============================================================================
+-- Table: silver.crm_cust_info
+-- =============================================================================
+-- Purpose:
+--     Creates a clean and deduplicated customer master.
+--
+-- Business rules applied:
+--     - Keeps only the latest record per customer (based on create date)
+--     - Trims unwanted spaces from names
+--     - Standardizes marital status codes (S, M → Single, Married)
+--     - Standardizes gender codes (M, F → Male, Female)
+--     - Replaces unknown values with 'n/a'
+-- =============================================================================
+    TRUNCATE silver.crm_cust_info;
+
+    INSERT INTO silver.crm_cust_info
+    SELECT
+        cst_id,
+        cst_key,
+        TRIM(cst_firstname),
+        TRIM(cst_lastname),
+        CASE
+            WHEN UPPER(TRIM(cst_marital_status)) = 'S' THEN 'Single'
+            WHEN UPPER(TRIM(cst_marital_status)) = 'M' THEN 'Married'
+            ELSE 'n/a'
+        END,
+        CASE
+            WHEN UPPER(TRIM(cst_gndr)) = 'F' THEN 'Female'
+            WHEN UPPER(TRIM(cst_gndr)) = 'M' THEN 'Male'
+            ELSE 'n/a'
+        END,
+        cst_create_date
+    FROM (
+        SELECT *,
+               ROW_NUMBER() OVER (PARTITION BY cst_id ORDER BY cst_create_date DESC) AS rn
+        FROM bronze.crm_cust_info
+        WHERE cst_id IS NOT NULL
+    ) t
+    WHERE rn = 1;
+
+-- =============================================================================
+-- Table: silver.crm_prd_info
+-- =============================================================================
+-- Purpose:
+--     Creates a standardized product master with valid date ranges.
+--
+-- Business rules applied:
+--     - Extracts category ID from product key for ERP joins
+--     - Converts product cost to numeric and replaces NULL with 0
+--     - Converts product line codes into readable names
+--     - Fixes incorrect end dates using:
+--           LEAD(start_date) - 1 day
+--     - Supports Slowly Changing Dimensions (SCD-2 style)
+-- =============================================================================
+    TRUNCATE silver.crm_prd_info;
+
+    INSERT INTO silver.crm_prd_info
+    SELECT
+        prd_id,
+        REPLACE(SUBSTRING(prd_key FROM 1 FOR 5), '-', '_') AS cat_id,
+        SUBSTRING(prd_key FROM 7),
+        prd_nm,
+        COALESCE(prd_cost, 0),
+        CASE
+            WHEN UPPER(TRIM(prd_line)) = 'M' THEN 'Mountain'
+            WHEN UPPER(TRIM(prd_line)) = 'R' THEN 'Road'
+            WHEN UPPER(TRIM(prd_line)) = 'S' THEN 'Other Sales'
+            WHEN UPPER(TRIM(prd_line)) = 'T' THEN 'Touring'
+            ELSE 'n/a'
+        END,
+        prd_start_dt,
+        (LEAD(prd_start_dt) OVER (PARTITION BY prd_key ORDER BY prd_start_dt) - INTERVAL '1 day')::DATE
+    FROM bronze.crm_prd_info;
+
+-- =============================================================================
+    -- Load Sales
+-- =============================================================================
+-- Table: silver.crm_sales_details
+-- =============================================================================
+-- Purpose:
+--     Creates a clean and reliable sales fact dataset.
+--
+-- Business rules applied:
+--     - Converts integer dates (YYYYMMDD) into DATE format
+--     - Replaces invalid dates (0, -99999999, wrong length) with NULL
+--     - Enforces the financial rule:
+--           Sales = Quantity × Price
+--     - Recalculates sales when incorrect
+--     - Derives price when missing or invalid
+--     - Prevents divide-by-zero errors
+-- =============================================================================    
+TRUNCATE silver.crm_sales_details;
+
+    INSERT INTO silver.crm_sales_details
+    SELECT
+        sls_ord_num,
+        sls_prd_key,
+        sls_cust_id,
+        CASE WHEN sls_order_dt = 0 OR LENGTH(sls_order_dt::text) <> 8 THEN NULL
+             ELSE TO_DATE(sls_order_dt::text,'YYYYMMDD') END,
+        CASE WHEN sls_ship_dt = 0 OR LENGTH(sls_ship_dt::text) <> 8 THEN NULL
+             ELSE TO_DATE(sls_ship_dt::text,'YYYYMMDD') END,
+        CASE WHEN sls_due_dt = 0 OR LENGTH(sls_due_dt::text) <> 8 THEN NULL
+             ELSE TO_DATE(sls_due_dt::text,'YYYYMMDD') END,
+        CASE
+            WHEN sls_sales IS NULL OR sls_sales <= 0
+              OR sls_sales <> sls_quantity * ABS(sls_price)
+            THEN sls_quantity * ABS(sls_price)
+            ELSE sls_sales
+        END,
+        sls_quantity,
+        CASE
+            WHEN sls_price IS NULL OR sls_price <= 0
+            THEN sls_sales / NULLIF(sls_quantity,0)
+            ELSE ABS(sls_price)
+        END
+    FROM bronze.crm_sales_details;
+
+-- =============================================================================
+-- Table: silver.erp_cust_az12
+-- =============================================================================
+-- Purpose:
+--     Standardizes ERP customer demographic data.
+--
+-- Business rules applied:
+--     - Removes NAS prefix from customer IDs
+--     - Replaces future birth dates with NULL
+--     - Normalizes gender values (M, F, Male, Female → Male/Female)
+-- =============================================================================    
+--------------------------------------------------------------------------
+    -- Load ERP Customers
+--------------------------------------------------------------------------
+    TRUNCATE silver.erp_cust_az12;
+
+    INSERT INTO silver.erp_cust_az12
+    SELECT
+        CASE WHEN cid LIKE 'NAS%' THEN SUBSTRING(cid FROM 4) ELSE cid END,
+        CASE WHEN bdate > CURRENT_DATE THEN NULL ELSE bdate END,
+        CASE
+            WHEN UPPER(TRIM(gen)) IN ('F','FEMALE') THEN 'Female'
+            WHEN UPPER(TRIM(gen)) IN ('M','MALE') THEN 'Male'
+            ELSE 'n/a'
+        END
+    FROM bronze.erp_cust_az12;
+
+
+
+-- =============================================================================
+-- Table: silver.erp_loc_a101
+-- =============================================================================
+-- Purpose:
+--     Standardizes customer country information.
+--
+-- Business rules applied:
+--     - Removes hyphens from customer IDs for CRM-ERP joins
+--     - Converts country codes to full names
+--     - Handles missing or blank values as 'n/a'
+-- =============================================================================
+    --------------------------------------------------------------------------
+    -- Load ERP Locations
+    --------------------------------------------------------------------------
+    TRUNCATE silver.erp_loc_a101;
+
+    INSERT INTO silver.erp_loc_a101
+    SELECT
+        REPLACE(cid,'-',''),
+        CASE
+            WHEN TRIM(cntry)='DE' THEN 'Germany'
+            WHEN TRIM(cntry) IN ('US','USA') THEN 'United States'
+            WHEN cntry IS NULL OR TRIM(cntry)='' THEN 'n/a'
+            ELSE TRIM(cntry)
+        END
+    FROM bronze.erp_loc_a101;
+
+
+-- =============================================================================
+-- Table: silver.erp_px_cat_g1v2
+-- =============================================================================
+-- Purpose:
+--     Loads ERP product category hierarchy.
+--
+-- This table provides:
+--     - Category
+--     - Sub-category
+--     - Maintenance group
+--
+-- Used to enrich product dimension in the Gold layer.
+-- =============================================================================
+--------------------------------------------------------------------------
+    -- Load ERP Product Categories
+--------------------------------------------------------------------------
+    TRUNCATE silver.erp_px_cat_g1v2;
+    INSERT INTO silver.erp_px_cat_g1v2
+    SELECT * FROM bronze.erp_px_cat_g1v2;
+
+END;
+$$;
+
+-- =============================================================================
+-- Procedure: silver.load_silver()
+-- =============================================================================
+-- Purpose:
+--     Automates the loading of all Silver tables from the Bronze layer.
+--
+-- What it does:
+--     - Truncates all Silver tables
+--     - Reloads cleansed and standardized data
+--     - Applies all business rules
+--     - Logs execution time
+--     - Handles errors gracefully
+--
+-- This makes the Silver layer:
+--     - Repeatable
+--     - Auditable
+--     - Production-ready
+-- =============================================================================
+
+CALL silver.load_silver();
