@@ -466,19 +466,7 @@ ORDER BY month;
 | **Data Quality** | Automated validation checks |
 | **Source Integration** | CRM + ERP system merge |
 
----
 
-## 🔮 Future Enhancements
-
-- [ ] Add incremental loading (CDC - Change Data Capture)
-- [ ] Implement SCD Type 2 for historical tracking
-- [ ] Add data lineage documentation
-- [ ] Create Power BI dashboards on Gold layer
-- [ ] Add Python orchestration (Airflow/Prefect)
-- [ ] Implement data catalog with metadata
-- [ ] Add automated testing framework
-
----
 
 ## 🤝 Connect With Me
 
