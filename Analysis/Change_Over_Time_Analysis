@@ -1,0 +1,71 @@
+/*
+===============================================================================
+Change Over Time Analysis
+===============================================================================
+Purpose:
+    - To track trends, growth, and changes in key business metrics over time.
+    - To analyze seasonality and long-term performance.
+    - To support time-series reporting in BI tools.
+
+Metrics Produced:
+    - Total sales
+    - Total customers
+    - Total quantity sold
+
+SQL Functions Used:
+    - EXTRACT()
+    - date_trunc()
+    - to_char()
+    - SUM(), COUNT()
+===============================================================================
+*/
+
+-- ============================================================================
+-- 1) Year–Month Aggregation (Calendar View)
+-- ============================================================================
+SELECT
+    EXTRACT(YEAR FROM order_date)::INT  AS order_year,
+    EXTRACT(MONTH FROM order_date)::INT AS order_month,
+    SUM(sales_amount)                  AS total_sales,
+    COUNT(DISTINCT customer_key)       AS total_customers,
+    SUM(quantity)                      AS total_quantity
+FROM gold.fact_sales
+WHERE order_date IS NOT NULL
+GROUP BY
+    EXTRACT(YEAR FROM order_date),
+    EXTRACT(MONTH FROM order_date)
+ORDER BY
+    order_year,
+    order_month;
+
+
+-- ============================================================================
+-- 2) Monthly Time Series using date_trunc()
+-- ============================================================================
+SELECT
+    date_trunc('month', order_date) AS order_month,
+    SUM(sales_amount)               AS total_sales,
+    COUNT(DISTINCT customer_key)    AS total_customers,
+    SUM(quantity)                   AS total_quantity
+FROM gold.fact_sales
+WHERE order_date IS NOT NULL
+GROUP BY
+    date_trunc('month', order_date)
+ORDER BY
+    order_month;
+
+
+-- ============================================================================
+-- 3) Formatted Month (Dashboard-ready)
+-- ============================================================================
+SELECT
+    to_char(order_date, 'YYYY-Mon')  AS order_month,
+    SUM(sales_amount)               AS total_sales,
+    COUNT(DISTINCT customer_key)    AS total_customers,
+    SUM(quantity)                   AS total_quantity
+FROM gold.fact_sales
+WHERE order_date IS NOT NULL
+GROUP BY
+    to_char(order_date, 'YYYY-Mon')
+ORDER BY
+    to_char(order_date, 'YYYY-Mon');
