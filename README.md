@@ -11,6 +11,12 @@
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
 <br>
+<br>
+
+### 🔗 [**View Live Dashboard →**](https://insightflow-dashboard-sage.vercel.app/)
+
+<br>
+
 
 **A modern Data Warehouse implementation using the Medallion Architecture (Bronze → Silver → Gold) with PostgreSQL**
 
